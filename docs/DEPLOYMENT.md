@@ -3,6 +3,7 @@
 ## Overview
 
 The bot is designed to run continuously on a low-power device (e.g., Raspberry Pi 5) with:
+
 - IB Gateway for market data
 - The bot polling every 5 minutes during market hours
 - Telegram for alerts
@@ -70,6 +71,7 @@ uv run python -m bot.main --log-level INFO
 ```
 
 The bot will:
+
 - Start polling immediately if market is open
 - Send a daily digest at 4:05 PM ET
 - Run heartbeats every hour during off-hours
@@ -142,6 +144,7 @@ docker run -d --name vix-bot \
 ### Alert Conditions
 
 An alert fires when ALL of these are true:
+
 - `p_revert > 0.7` (model predicts high probability of VIX drop)
 - `p_spike_first < 0.3` (low risk of further spike)
 - `vix_zscore > 1.0` (VIX is meaningfully elevated)
@@ -153,6 +156,7 @@ After sending an alert for a given tier (major/moderate/mild), the bot won't sen
 ### Daily Digest
 
 Sent at 4:05 PM ET every trading day with:
+
 - Current VIX level and z-score
 - Model predictions (p_revert, p_spike_first)
 - Term structure status
@@ -163,24 +167,26 @@ Sent at 4:05 PM ET every trading day with:
 ### Health Endpoint Responses
 
 **Healthy (HTTP 200):**
+
 ```json
 {
-    "status": "healthy",
-    "uptime_seconds": 3600,
-    "model_version": "v001",
-    "data_fresh": true,
-    "memory_mb": 120
+  "status": "healthy",
+  "uptime_seconds": 3600,
+  "model_version": "v001",
+  "data_fresh": true,
+  "memory_mb": 120
 }
 ```
 
 **Degraded (HTTP 503):**
+
 ```json
 {
-    "status": "degraded",
-    "data_fresh": false,
-    "staleness": {
-        "VIX": {"stale": true, "age_seconds": 600}
-    }
+  "status": "degraded",
+  "data_fresh": false,
+  "staleness": {
+    "VIX": { "stale": true, "age_seconds": 600 }
+  }
 }
 ```
 
@@ -188,13 +194,13 @@ Sent at 4:05 PM ET every trading day with:
 
 Key log messages to watch for:
 
-| Message | Meaning |
-|---------|---------|
-| `Alert sent for tier: MAJOR_SPIKE` | Trade alert delivered |
-| `Critical data stale: ['VIX']` | Data feed interrupted |
-| `Poller not connected, attempting reconnect` | IBKR connection lost |
-| `Daily digest sent` | End-of-day summary delivered |
-| `No alert: p_revert=0.55 (need >0.70)` | Signal below threshold |
+| Message                                      | Meaning                      |
+| -------------------------------------------- | ---------------------------- |
+| `Alert sent for tier: MAJOR_SPIKE`           | Trade alert delivered        |
+| `Critical data stale: ['VIX']`               | Data feed interrupted        |
+| `Poller not connected, attempting reconnect` | IBKR connection lost         |
+| `Daily digest sent`                          | End-of-day summary delivered |
+| `No alert: p_revert=0.55 (need >0.70)`       | Signal below threshold       |
 
 ## Troubleshooting
 

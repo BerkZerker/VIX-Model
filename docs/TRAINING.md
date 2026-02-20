@@ -6,7 +6,7 @@ The training pipeline implements phased, walk-forward cross-validated model trai
 
 ## Walk-Forward Cross-Validation
 
-```
+```text
 Fold 0:  [2011-2015 train] → [2016 validate]
 Fold 1:  [2011-2016 train] → [2017 validate]
 Fold 2:  [2011-2017 train] → [2018 validate]
@@ -23,6 +23,7 @@ Minimum 5 years of training data before the first fold. This prevents look-ahead
 **Goal**: Predict probability that VIX drops >= 15% within the horizon window.
 
 **Model**: XGBoost binary classifier with:
+
 - `max_depth=5`, `n_estimators=500`, `learning_rate=0.05`
 - `subsample=0.8`, `colsample_bytree=0.8`
 - `scale_pos_weight` auto-tuned to class imbalance
@@ -39,6 +40,7 @@ Minimum 5 years of training data before the first fold. This prevents look-ahead
 **Model**: Same XGBoost architecture as 2a.
 
 **Gate**: AUC must exceed 0.60. If not, the system falls back to a rules-based proxy:
+
 - Spike risk = 1 if VVIX > 120 AND |term_slope| < 0.01 (flat term structure)
 - Otherwise spike risk = 0
 
@@ -82,11 +84,13 @@ uv run python -m training.train \
 The baseline (`training/baseline.py`) uses hand-crafted rules from volatility trading domain knowledge:
 
 **Signal conditions** (all must be true):
+
 1. `vix_zscore > 1.5` (elevated volatility)
 2. `term_slope < -0.02` (backwardation) OR `vix_zscore > 2.0` (very elevated)
 3. `spy_velocity < -0.02` (equity selloff confirming VIX spike)
 
 **Spike risk proxy**:
+
 - `vvix > 120` AND `|term_slope| < 0.01` (flat term structure = uncertainty)
 
 Every trained model must beat this baseline. If it doesn't, the baseline is used instead.
@@ -105,13 +109,13 @@ Several measures prevent data leakage:
 
 Consistently across folds, the most important features are:
 
-| Rank | Feature | Description |
-|------|---------|-------------|
-| 1 | `vix_percentile` | Where current VIX sits in 1-year distribution |
-| 2 | `vix_spot_lag20` | VIX level 20 trading days ago |
-| 3 | `vvix` | Volatility of VIX — higher = more uncertain |
-| 4 | `vvix_lag10` | VVIX 10 days ago |
-| 5 | `term_slope_zscore` | How unusual the term structure is |
+| Rank | Feature             | Description                                   |
+| ---- | ------------------- | --------------------------------------------- |
+| 1    | `vix_percentile`    | Where current VIX sits in 1-year distribution |
+| 2    | `vix_spot_lag20`    | VIX level 20 trading days ago                 |
+| 3    | `vvix`              | Volatility of VIX — higher = more uncertain   |
+| 4    | `vvix_lag10`        | VVIX 10 days ago                              |
+| 5    | `term_slope_zscore` | How unusual the term structure is             |
 
 The model learns that VIX percentile rank and recent VVIX levels are the strongest predictors of mean reversion — which aligns with volatility trading intuition.
 

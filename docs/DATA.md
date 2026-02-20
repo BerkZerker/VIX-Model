@@ -2,18 +2,18 @@
 
 ## Data Sources
 
-| Source | Ticker/File | Description | Free? |
-|--------|-------------|-------------|-------|
-| yfinance | `^VIX` | VIX daily OHLCV (1990-present) | Yes |
-| yfinance | `SPY` | S&P 500 ETF daily OHLCV | Yes |
-| yfinance | `^VVIX` | CBOE VVIX (2007-present) | Yes |
-| yfinance | `^VIX9D` | 9-day VIX (2011-present) | Yes |
-| yfinance | `^SKEW` | CBOE SKEW index | Yes |
-| yfinance | `HYG` | High-yield corporate bond ETF | Yes |
-| yfinance | `TLT` | Long-term Treasury ETF | Yes |
-| IBKR | VIX/SPY | 5-minute intraday bars (live) | With account |
-| CBOE | Various | VIX futures settlement data | Unreliable (403s) |
-| Quandl | CHRIS/CBOE_VX* | VIX continuous futures | Paid |
+| Source   | Ticker/File     | Description                    | Free?             |
+| -------- | --------------- | ------------------------------ | ----------------- |
+| yfinance | `^VIX`          | VIX daily OHLCV (1990-present) | Yes               |
+| yfinance | `SPY`           | S&P 500 ETF daily OHLCV        | Yes               |
+| yfinance | `^VVIX`         | CBOE VVIX (2007-present)       | Yes               |
+| yfinance | `^VIX9D`        | 9-day VIX (2011-present)       | Yes               |
+| yfinance | `^SKEW`         | CBOE SKEW index                | Yes               |
+| yfinance | `HYG`           | High-yield corporate bond ETF  | Yes               |
+| yfinance | `TLT`           | Long-term Treasury ETF         | Yes               |
+| IBKR     | VIX/SPY         | 5-minute intraday bars (live)  | With account      |
+| CBOE     | Various         | VIX futures settlement data    | Unreliable (403s) |
+| Quandl   | CHRIS/CBOE_VX\* | VIX continuous futures         | Paid              |
 
 ### VIX Futures Data
 
@@ -26,6 +26,7 @@ Historical VIX futures data is the hardest to obtain for free. The pipeline hand
 5. **Synthetic fallback** — generates a realistic term structure from VIX spot
 
 The synthetic fallback uses a model based on observed VIX behavior:
+
 - VIX > 30: backwardation (futures below spot, mean ~3% discount)
 - VIX 20-30: mild contango or flat
 - VIX < 20: contango (futures above spot, mean ~5% premium)
@@ -36,17 +37,17 @@ This produces realistic term slope and curvature features for training when real
 
 After running all fetch scripts, `data/raw/` contains:
 
-| File | Size | Rows | Date Range |
-|------|------|------|------------|
-| `vix_daily.csv` | ~780 KB | 9,100 | 1990-2026 |
-| `spy_daily.csv` | ~770 KB | 8,300 | 1993-2026 |
-| `vvix_daily.csv` | ~400 KB | 4,800 | 2007-2026 |
-| `vix9d_daily.csv` | ~325 KB | 3,800 | 2011-2026 |
-| `skew_daily.csv` | ~780 KB | 9,000 | 1990-2026 |
-| `hyg_daily.csv` | ~440 KB | 4,700 | 2007-2026 |
-| `tlt_daily.csv` | ~540 KB | 5,900 | 2002-2026 |
-| `vix_intraday_5min.csv` | ~340 KB | 7,020 | Mock data |
-| `spy_intraday_5min.csv` | ~380 KB | 7,020 | Mock data |
+| File                    | Size    | Rows  | Date Range |
+| ----------------------- | ------- | ----- | ---------- |
+| `vix_daily.csv`         | ~780 KB | 9,100 | 1990-2026  |
+| `spy_daily.csv`         | ~770 KB | 8,300 | 1993-2026  |
+| `vvix_daily.csv`        | ~400 KB | 4,800 | 2007-2026  |
+| `vix9d_daily.csv`       | ~325 KB | 3,800 | 2011-2026  |
+| `skew_daily.csv`        | ~780 KB | 9,000 | 1990-2026  |
+| `hyg_daily.csv`         | ~440 KB | 4,700 | 2007-2026  |
+| `tlt_daily.csv`         | ~540 KB | 5,900 | 2002-2026  |
+| `vix_intraday_5min.csv` | ~340 KB | 7,020 | Mock data  |
+| `spy_intraday_5min.csv` | ~380 KB | 7,020 | Mock data  |
 
 ## Feature Engineering
 
@@ -55,6 +56,7 @@ Features are computed in `training/features.py`. All features are computed from 
 ### Rolling Windows
 
 Most features use rolling windows that require warmup periods:
+
 - `vix_zscore`: 60-day rolling mean and std
 - `vix_percentile`: 252-day rolling rank
 - `rv_iv_spread`: 20-day realized vol (uses T-1 close)
@@ -78,19 +80,19 @@ A day is eligible for labeling when `vix_zscore > 1.0` (VIX is at least 1 standa
 
 Different VIX levels get different time horizons for reversion:
 
-| VIX Level | Horizon | Rationale |
-|-----------|---------|-----------|
-| 18-25 | 15 trading days | Mild elevation reverts quickly |
-| 25-35 | 30 trading days | Moderate spikes need more time |
-| 35+ | 45 trading days | Major spikes can persist |
+| VIX Level | Horizon         | Rationale                      |
+| --------- | --------------- | ------------------------------ |
+| 18-25     | 15 trading days | Mild elevation reverts quickly |
+| 25-35     | 30 trading days | Moderate spikes need more time |
+| 35+       | 45 trading days | Major spikes can persist       |
 
 ### Label Definitions
 
-| Label | Type | Definition |
-|-------|------|------------|
-| `label_revert` | Binary | VIX drops >= 15% from current level within horizon |
-| `label_spike_first` | Binary | VIX rises >= 10% before any 15% drop occurs |
-| `label_magnitude` | Continuous | Maximum % drop within horizon |
+| Label               | Type       | Definition                                         |
+| ------------------- | ---------- | -------------------------------------------------- |
+| `label_revert`      | Binary     | VIX drops >= 15% from current level within horizon |
+| `label_spike_first` | Binary     | VIX rises >= 10% before any 15% drop occurs        |
+| `label_magnitude`   | Continuous | Maximum % drop within horizon                      |
 
 ### Dataset Statistics (v001)
 
@@ -101,11 +103,11 @@ Different VIX levels get different time horizons for reversion:
 
 **By tier:**
 
-| Tier | Days | Revert Rate | Spike-First Rate |
-|------|------|-------------|-----------------|
-| VIX 18-25 | 281 | 78% | — |
-| VIX 25-35 | 149 | 91% | — |
-| VIX 35+ | 63 | 98% | — |
+| Tier      | Days | Revert Rate | Spike-First Rate |
+| --------- | ---- | ----------- | ---------------- |
+| VIX 18-25 | 281  | 78%         | —                |
+| VIX 25-35 | 149  | 91%         | —                |
+| VIX 35+   | 63   | 98%         | —                |
 
 ## Building the Dataset
 
