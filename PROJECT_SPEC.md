@@ -8,40 +8,38 @@ A lightweight, always-on trading signal bot that monitors VIX conditions in real
 
 **Core thesis:** VIX is mean-reverting at all elevated levels, not just during extreme spikes. By capturing moderate setups (e.g., VIX 22 reverting to 16) alongside major events, the bot sees 200-400+ tradeable setups over the historical dataset instead of ~15-20, enabling a genuinely trainable model with better signal diversity.
 
-**Modeling philosophy:** Start with the simplest model that could work (gradient-boosted trees), prove edge in rigorous walk-forward backtesting, and only add complexity (LSTM) if the simpler model leaves clear performance on the table. Every model must beat a defined rules-based baseline to ship.
+**Modeling philosophy:** Start with the simplest model that could work (gradient-boosted trees on daily features), prove edge in rigorous walk-forward backtesting, and only add complexity (Hierarchical CNN+GRU on multi-resolution data) if the simpler model leaves clear performance on the table. Every model must beat a defined rules-based baseline to ship.
 
 ---
 
 ## Architecture
 
 ```text
-┌──────────────────────────────────────────────────────┐
-│                   Raspberry Pi 5                      │
-│                                                       │
-│  ┌─────────────┐    ┌──────────────┐    ┌──────────┐ │
-│  │ Data Poller  │───>│ Feature Eng. │───>│  Model   │ │
-│  │ (Scheduler)  │    │  Pipeline    │    │ (ONNX)   │ │
-│  └─────────────┘    └──────────────┘    └────┬─────┘ │
-│        │                                      │       │
-│        │              ┌──────────────┐        │       │
-│        │              │  Notifier    │<───────┘       │
-│        │              │  (Telegram)  │                │
-│        │              └──────────────┘                │
-│        │              ┌──────────────┐                │
-│        └─────────────>│  SQLite DB   │                │
-│                       │  (data log)  │                │
-│                       └──────────────┘                │
-└──────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────┐
+│                       Raspberry Pi 5                            │
+│                                                                 │
+│  ┌─────────────┐    ┌──────────────┐    ┌────────────────────┐  │
+│  │ Data Poller │───>│  SQLite DB   │───>│  Multi-Resolution  │  │
+│  │ (5-min bars)│    │ (5-min bars) │    │  Aggregation       │  │
+│  └─────────────┘    └──────────────┘    │  (5m / 1h / 1d)   │  │
+│                                          └────────┬───────────┘  │
+│                                                   │              │
+│                     ┌──────────────┐    ┌─────────▼────────┐    │
+│                     │  Notifier    │<───│  Model Inference  │    │
+│                     │  (Telegram)  │    │  (ONNX: XGB +    │    │
+│                     └──────────────┘    │   CNN+GRU)        │    │
+│                                          └──────────────────┘    │
+└────────────────────────────────────────────────────────────────┘
 
-┌──────────────────────────────────────────────────────┐
-│               Desktop (4070) -- Training Only         │
-│                                                       │
-│  ┌─────────────┐    ┌──────────────┐    ┌──────────┐ │
-│  │ Historical   │───>│  Training    │───>│  Export  │ │
-│  │ Data Scripts │    │  (XGBoost +  │    │  (ONNX)  │ │
-│  │             │    │   PyTorch)   │    │          │ │
-│  └─────────────┘    └──────────────┘    └──────────┘ │
-└──────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────┐
+│                 Desktop (4070) -- Training Only                 │
+│                                                                 │
+│  ┌─────────────┐    ┌──────────────┐    ┌──────────┐           │
+│  │ Historical  │───>│  Training    │───>│  Export  │           │
+│  │ Data        │    │  (XGBoost +  │    │  (ONNX)  │           │
+│  │ Scripts     │    │   PyTorch)   │    │          │           │
+│  └─────────────┘    └──────────────┘    └──────────┘           │
+└────────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -50,28 +48,32 @@ A lightweight, always-on trading signal bot that monitors VIX conditions in real
 
 ### Real-Time Data (for live monitoring)
 
-| Data Point                           | Source          | Update Frequency                  | Priority |
-| ------------------------------------ | --------------- | --------------------------------- | -------- |
-| VIX spot price                       | IBKR API        | Every 1-2 min during market hours | Critical |
-| VIX futures curve (front 4-6 months) | IBKR API        | Every 5 min                       | Critical |
-| SPY price + daily change             | IBKR API        | Every 1-2 min                     | High     |
-| VVIX (vol-of-vol index)              | IBKR API        | Every 5 min                       | High     |
-| VIX9D (9-day VIX)                    | IBKR API        | Every 5 min                       | High     |
-| SKEW index                           | IBKR API        | Every 15 min                      | High     |
-| UVXY/VXX price + options chain       | IBKR API        | On signal trigger                 | High     |
-| VIX options chain                    | IBKR API        | On signal trigger                 | Medium   |
-| VIX futures front-month volume       | IBKR API        | Every 5 min                       | Medium   |
-| Put/call ratio (CBOE equity)         | IBKR API / CBOE | End of day                        | Medium   |
-| HY credit spread (HYG-TLT proxy)     | IBKR API        | Every 15 min                      | Medium   |
+| Data Point                           | Source          | Update Frequency             | Priority |
+| ------------------------------------ | --------------- | ---------------------------- | -------- |
+| VIX spot price (OHLCV 5-min bars)    | IBKR API        | Every 5 min (stored as bars) | Critical |
+| VIX futures curve (front 4-6 months) | IBKR API        | Every 5 min                  | Critical |
+| SPY price (OHLCV 5-min bars)         | IBKR API        | Every 5 min (stored as bars) | Critical |
+| VVIX (vol-of-vol index)              | IBKR API        | Every 5 min                  | High     |
+| VIX9D (9-day VIX)                    | IBKR API        | Every 5 min                  | High     |
+| SKEW index                           | IBKR API        | Every 15 min                 | High     |
+| UVXY/VXX price + options chain       | IBKR API        | On signal trigger            | High     |
+| VIX options chain                    | IBKR API        | On signal trigger            | Medium   |
+| VIX futures front-month volume       | IBKR API        | Every 5 min                  | Medium   |
+| Put/call ratio (CBOE equity)         | IBKR API / CBOE | End of day                   | Medium   |
+| HY credit spread (HYG-TLT proxy)     | IBKR API        | Every 15 min                 | Medium   |
+
+**5-minute bar storage:** All critical data points are stored as 5-minute OHLCV bars in SQLite. The bot continuously accumulates bars during market hours. At inference time, the multi-resolution preprocessing pipeline (see Model Design) aggregates these bars into the three input streams: raw 5-min bars for the intraday stream, hourly aggregation for short-term, and daily aggregation for regime context.
 
 ### Historical Data (for training)
 
 | Data Point                         | Source                     | Coverage                                | Cost                                |
 | ---------------------------------- | -------------------------- | --------------------------------------- | ----------------------------------- |
 | VIX daily close                    | Yahoo Finance (`yfinance`) | 1990-present                            | Free                                |
+| VIX 5-min intraday bars            | IBKR historical data API   | ~1-2 years (IBKR limit)                 | Free (with IBKR account)            |
 | VIX futures historical settlements | CBOE website / Quandl      | 2004-present                            | Free (scraping) or ~$30/mo (Quandl) |
 | VIX futures volume (daily)         | CBOE / Quandl              | 2004-present                            | Free (scraping)                     |
 | SPY daily OHLCV                    | Yahoo Finance              | 1993-present                            | Free                                |
+| SPY 5-min intraday bars            | IBKR historical data API   | ~1-2 years (IBKR limit)                 | Free (with IBKR account)            |
 | VIX term structure (reconstructed) | CBOE + manual cleanup      | 2004-present                            | Free (labor-intensive)              |
 | UVXY/VXX daily                     | Yahoo Finance              | 2009-present (VXX), 2011-present (UVXY) | Free                                |
 | VVIX daily close                   | Yahoo Finance / CBOE       | 2006-present                            | Free                                |
@@ -79,6 +81,8 @@ A lightweight, always-on trading signal bot that monitors VIX conditions in real
 | SKEW daily close                   | CBOE / Yahoo Finance       | 2011-present                            | Free                                |
 | HYG daily (HY credit proxy)        | Yahoo Finance              | 2007-present                            | Free                                |
 | CBOE equity put/call ratio         | CBOE website               | 2006-present                            | Free (scraping)                     |
+
+**Intraday data note:** IBKR provides ~1-2 years of historical 5-min bar data. This limits the Hierarchical CNN+GRU's intraday and short-term streams to training on recent data only. For the longer historical period (2004-present), the regime stream trains on daily data from free sources. The XGBoost model trains on the full daily history. As the bot runs and accumulates live 5-min bars in SQLite, the intraday training set grows over time.
 
 ### Historical Data Acquisition Strategy
 
@@ -97,7 +101,9 @@ Plan to spend **3-4 days** cleaning and aligning this data. Futures roll dates, 
 
 ### Input Features
 
-The model receives a feature vector computed from raw market data. All features are standardized before model input using a `StandardScaler` fit exclusively on the training window (never the full dataset) to avoid leakage. Z-score and percentile features are inherently normalized but are still passed through the scaler for consistency.
+Features are organized into two tiers: **daily features** used by both XGBoost and the Hierarchical CNN+GRU's regime stream, and **intraday features** used by the CNN+GRU's higher-resolution streams. All features are standardized before model input using a `StandardScaler` fit exclusively on the training window (never the full dataset) to avoid leakage.
+
+#### Daily Features (XGBoost + Regime Stream)
 
 | Feature              | Description                                         | Rationale                                                               |
 | -------------------- | --------------------------------------------------- | ----------------------------------------------------------------------- |
@@ -120,11 +126,55 @@ The model receives a feature vector computed from raw market data. All features 
 | `hy_spread_velocity` | 5-day rate of change in HYG-TLT spread              | Credit stress widening while VIX moderate = danger sign                 |
 | `day_of_week`        | Encoded day of week (0-4)                           | VIX expiration week and options roll patterns have known effects        |
 
+#### Intraday Features (CNN+GRU Intraday + Short-Term Streams)
+
+These features are computed from 5-min bars and provide the high-resolution context that daily data cannot capture:
+
+| Feature                 | Resolution | Stream     | Description                                                   |
+| ----------------------- | ---------- | ---------- | ------------------------------------------------------------- |
+| `vix_ohlcv`             | 5-min bar  | Intraday   | Raw VIX OHLCV at 5-min resolution                             |
+| `spy_ohlcv`             | 5-min bar  | Intraday   | Raw SPY OHLCV — correlated move context                       |
+| `vix_intraday_velocity` | 5-min      | Intraday   | 30-min and 2-hour rate of change                              |
+| `volume_surge`          | 5-min      | Intraday   | Volume relative to time-of-day average (detects unusual flow) |
+| `intraday_range_pct`    | 5-min      | Intraday   | Running (high-low)/open — how wide the day has been so far    |
+| `vix_hourly_ohlcv`      | Hourly     | Short-term | Aggregated from 5-min bars: OHLCV per hour                    |
+| `spy_hourly_ohlcv`      | Hourly     | Short-term | Aggregated from 5-min bars                                    |
+| `hourly_term_slope`     | Hourly     | Short-term | Term structure slope sampled hourly                           |
+| `hourly_vvix`           | Hourly     | Short-term | VVIX sampled hourly — shows vol-of-vol evolution within days  |
+| `hourly_momentum`       | Hourly     | Short-term | 4-hour and 1-day momentum computed from hourly bars           |
+
 ### Feature Normalization
 
-All features are standardized using `StandardScaler` fit on the training window of each walk-forward fold. At inference time, the scaler is fit on a trailing 252-day window updated daily. The scaler parameters are saved alongside the model for deployment.
+All features are standardized using `StandardScaler` fit on the training window of each walk-forward fold. At inference time, the scaler is fit on a trailing 252-day window (daily features) or equivalent rolling window (intraday features), updated daily. The scaler parameters are saved alongside the model for deployment.
 
-For the XGBoost model, normalization is less critical (tree models are scale-invariant) but is applied anyway for pipeline consistency when comparing against the LSTM.
+For the XGBoost model, normalization is less critical (tree models are scale-invariant) but is applied anyway for pipeline consistency when comparing against the Hierarchical CNN+GRU.
+
+### Multi-Resolution Preprocessing Pipeline
+
+The Hierarchical CNN+GRU requires three input tensors at different time resolutions. This preprocessing happens before model inference, both during training and at inference time on the Pi:
+
+```text
+Raw 5-min bars (stored in SQLite)
+  │
+  ├── Last 2 trading days → kept as-is → Intraday stream input
+  │     Shape: (156, n_features_intraday)
+  │
+  ├── Last 2 weeks → aggregated to hourly OHLCV + features → Short-term input
+  │     Shape: (130, n_features_hourly)
+  │
+  └── Last 2-3 months → aggregated to daily OHLCV + features → Regime input
+        Shape: (60, n_features_daily)
+```
+
+The daily aggregation in the regime stream maps directly to the daily features listed above. The hourly and 5-min streams add the intraday features that justify collecting 5-min data. Each stream sees the appropriate level of detail for its timescale:
+
+| Stream     | Lookback   | Resolution | Bars | What it captures                                                                         |
+| ---------- | ---------- | ---------- | ---- | ---------------------------------------------------------------------------------------- |
+| Intraday   | 2 days     | 5-min      | ~156 | Morning gaps, intraday reversals, volume surges, speed of the current move               |
+| Short-term | 2 weeks    | Hourly     | ~130 | Multi-day spike shape, VIX acceleration/deceleration, term structure evolution over days |
+| Regime     | 2-3 months | Daily      | ~60  | What level VIX came from, whether this is a new regime or a blip, 60-day z-score trend   |
+
+**Why multi-resolution matters:** Feeding a flat sequence of 1,716 raw 5-min bars (1 month at 5-min resolution) into a single model creates problems — a GRU's hidden vector becomes a bottleneck over that many steps, a TCN needs 11 dilated layers where deep layers sample sparsely, and attention over 1,716 steps is expensive. The key insight is that you don't need 5-min resolution for data from 3 weeks ago. What happened at 10:35 AM eighteen days ago doesn't matter at 5-minute granularity — what matters is whether that day was part of a slow grind or a sharp spike. The hierarchical design encodes this domain knowledge ("timescale of relevance decreases with age") directly into the architecture rather than asking the model to learn it from limited data.
 
 ### Model Architecture
 
@@ -155,24 +205,53 @@ XGBoost Regressor (for expected_magnitude)
 
 XGBoost exports to ONNX via `skl2onnx` or `onnxmltools`. Inference is sub-millisecond on Pi 5.
 
-#### Secondary Model: 2-Layer LSTM (only if XGBoost leaves clear room for improvement)
+#### Secondary Model: Hierarchical CNN+GRU (only if XGBoost leaves clear room for improvement)
 
-The LSTM is trained only after XGBoost establishes a baseline. It must beat XGBoost by a meaningful margin (>2% AUC on walk-forward validation) to justify deployment complexity.
+The Hierarchical CNN+GRU is trained only after XGBoost establishes a baseline. It must beat XGBoost by a meaningful margin (>2% AUC on walk-forward validation) to justify deployment complexity. The architecture uses three parallel streams processing different timescales, merged before the output heads:
 
 ```text
-Input (17 features x 20-day lookback window)
-    -> LSTM(hidden=64, layers=2, dropout=0.3)
-    -> Linear(64, 32)
-    -> ReLU
-    -> Linear(32, 3)
-    -> Output: [p_revert, p_spike_first, expected_magnitude]
+Stream 1 — INTRADAY (last 2 days, 5-min bars, ~156 bars)
+  "What's happening right now?"
+  → Conv1D (kernel=6, ~30-min patterns) + Conv1D (kernel=24, ~2-hr patterns)
+  → GRU(hidden=48)
+  → h_intraday (48-dim)
+
+Stream 2 — SHORT-TERM (last 2 weeks, hourly bars, ~130 bars)
+  "How is this episode developing?"
+  → Conv1D (kernel=4, ~4-hr patterns) + Conv1D (kernel=24, ~1-day patterns)
+  → GRU(hidden=48)
+  → h_short (48-dim)
+
+Stream 3 — REGIME (last 2-3 months, daily bars, ~60 bars)
+  "What regime are we in?"
+  → Conv1D (kernel=5, ~1-week patterns) + Conv1D (kernel=15, ~3-week patterns)
+  → GRU(hidden=32)
+  → h_regime (32-dim)
+
+Merge: concat(h_intraday, h_short, h_regime)  → 128-dim
+  → Dense(128, 64) → ReLU → Dropout(0.3)
+  → Dense(64, 3)
+  → [p_revert, p_spike_first, expected_magnitude]
 ```
 
-Parameter count: roughly 50,000-100,000. Trains in seconds on the 4070. Inference in sub-millisecond on Pi 5.
+Parameter count: ~200,000-250,000. Trains in seconds on the 4070. Inference sub-millisecond on Pi 5.
+
+**Why this beats the alternatives for this constraint set:**
+
+- **vs. flat GRU on 1,716 bars:** Each GRU here handles ~60-156 steps — well within the range where GRUs perform reliably. A flat GRU over 1,716 steps would wash out early regime context in the hidden vector.
+- **vs. deep TCN (11 dilated layers):** A TCN "sees" 1 month ago through dilated convolutions sampling every 512th bar — like looking through frosted glass. The regime stream sees the same data as clean daily bars with full features. Much higher information density.
+- **vs. TFT (Temporal Fusion Transformer):** Similar capability but at 2-5x fewer parameters and with clean ONNX export. The TFT's attention mechanism discovers which past timesteps matter — but the hierarchical design makes that choice explicitly. With only 200-400 independent episodes, encoding this prior is better than learning it.
+
+**ONNX deployment:** Each stream is Conv1D + GRU, and the merge is concatenation + dense layers. All standard ONNX ops. The model takes three input tensors of fixed shape and produces three outputs. No custom ops or attention layers to complicate export.
 
 #### Ensemble Option
 
-If both models show independent strengths (e.g., XGBoost better on moderate setups, LSTM better on spike detection), a simple average or stacked ensemble is worth testing. But this is Phase 2 optimization, not the starting point.
+The regime stream and XGBoost on daily features see similar information through different lenses (neural temporal processing vs. tree-based feature interactions). Two ensemble strategies:
+
+1. **Late fusion (recommended start):** Run both models independently, combine outputs with a learned or fixed weight (e.g., 0.6 × CNN+GRU + 0.4 × XGB). Simple, robust, easy to debug.
+2. **XGBoost as regime substitute:** Feed XGBoost's daily-level outputs as additional input to the merge layer, letting the CNN+GRU focus its parameters on what XGBoost can't see (intraday + short-term dynamics). More elegant, slightly more complex.
+
+If both models show independent strengths (e.g., XGBoost better on moderate setups, CNN+GRU better on fast-developing spikes), the late fusion ensemble is worth testing. But this is Phase 2 optimization, not the starting point.
 
 **Output heads (for both models):**
 
@@ -233,15 +312,15 @@ This z-score-based entry threshold (instead of a fixed level like VIX > 25) is c
 #### Training Details
 
 - **Walk-forward validation**: Train on years 1-N, validate on year N+1. Roll forward. Never peek at future data. Minimum 5 walk-forward folds for statistical credibility.
-- **Loss function (LSTM)**: Multi-task loss combining BCE for the two probability heads + MSE for magnitude, with tunable weights.
+- **Loss function (CNN+GRU)**: Multi-task loss combining BCE for the two probability heads + MSE for magnitude, with tunable weights.
 - **Loss function (XGBoost)**: Separate models per output head. `log_loss` for classifiers, `reg:squarederror` for magnitude.
-- **Class balance**: With the broader scope, class imbalance is less severe (~200-400 positive labels out of ~5,000 days) but still present. Use `scale_pos_weight` (XGBoost) or focal loss (LSTM) rather than oversampling.
-- **Regularization**: For XGBoost: max_depth cap, subsample, colsample_bytree, early stopping on validation loss. For LSTM: dropout (0.3), early stopping, weight decay. Both models are small enough that heavy regularization is appropriate.
+- **Class balance**: With the broader scope, class imbalance is less severe (~200-400 positive labels out of ~5,000 days) but still present. Use `scale_pos_weight` (XGBoost) or focal loss (CNN+GRU) rather than oversampling.
+- **Regularization**: For XGBoost: max_depth cap, subsample, colsample_bytree, early stopping on validation loss. For CNN+GRU: dropout (0.3) on the merge layer, early stopping, weight decay. Both models are small enough that heavy regularization is appropriate.
 - **Phased training approach**:
   - **Phase 2a**: Train `p_revert` head only (binary classifier) using XGBoost. Validate in walk-forward. Compare against the rules-based baseline. This is the sanity check -- if this doesn't beat the baseline, revisit features and labeling before adding complexity.
   - **Phase 2b**: Train `p_spike_first` head using XGBoost. This is the hard, high-value prediction. If walk-forward performance is not statistically meaningful (AUC < 0.60 across folds), fall back to the rules-based spike risk proxy (VVIX + term structure heuristic) and document why.
   - **Phase 2c**: Add `expected_magnitude` head only if 2a and 2b show solid walk-forward performance.
-  - **Phase 2d**: Train LSTM on the same data. Compare head-to-head against XGBoost on all walk-forward folds. Only adopt LSTM if it beats XGBoost by >2% AUC consistently across folds. Consider ensemble if strengths are complementary.
+  - **Phase 2d**: Train Hierarchical CNN+GRU on multi-resolution data. Compare head-to-head against XGBoost on all walk-forward folds. Only adopt CNN+GRU if it beats XGBoost by >2% AUC consistently across folds. Test late fusion ensemble if both show independent strengths.
 
 ---
 
@@ -293,15 +372,15 @@ The backtest should include sensitivity analysis for:
 
 ### Training Environment (Desktop / 4070)
 
-| Component     | Tool                               | Notes                                |
-| ------------- | ---------------------------------- | ------------------------------------ |
-| Language      | Python 3.11+                       |                                      |
-| ML Framework  | XGBoost (primary), PyTorch (LSTM)  | XGBoost first, LSTM only if needed   |
-| Data handling | pandas, numpy                      | Feature engineering                  |
-| Data fetching | yfinance, requests                 | Historical data collection           |
-| Export        | ONNX (`onnxmltools`, `torch.onnx`) | For Pi deployment                    |
-| Backtesting   | Custom (see Backtesting section)   | Walk-forward P&L simulation          |
-| Notebooks     | Jupyter                            | Exploratory analysis and backtesting |
+| Component     | Tool                                 | Notes                                 |
+| ------------- | ------------------------------------ | ------------------------------------- |
+| Language      | Python 3.11+                         |                                       |
+| ML Framework  | XGBoost (primary), PyTorch (CNN+GRU) | XGBoost first, CNN+GRU only if needed |
+| Data handling | pandas, numpy                        | Feature engineering                   |
+| Data fetching | yfinance, requests                   | Historical data collection            |
+| Export        | ONNX (`onnxmltools`, `torch.onnx`)   | For Pi deployment                     |
+| Backtesting   | Custom (see Backtesting section)     | Walk-forward P&L simulation           |
+| Notebooks     | Jupyter                              | Exploratory analysis and backtesting  |
 
 ### Inference/Monitoring Environment (Raspberry Pi 5)
 
@@ -319,9 +398,9 @@ The backtest should include sensitivity analysis for:
 
 ### Why These Choices
 
-**XGBoost over LSTM as primary model**: With 200-400 labeled samples and ~42 features, gradient-boosted trees consistently outperform neural networks on tabular data at this scale. They're faster to train, easier to interpret (feature importance is built in), less prone to overfitting, and simpler to debug. The LSTM remains available as a secondary model if XGBoost leaves clear room for improvement.
+**XGBoost over neural nets as primary model**: With 200-400 labeled samples and ~42 daily features, gradient-boosted trees consistently outperform neural networks on tabular data at this scale. They're faster to train, easier to interpret (feature importance is built in), less prone to overfitting, and simpler to debug. The Hierarchical CNN+GRU is available as a secondary model that can exploit intraday multi-resolution data that XGBoost cannot naturally process.
 
-**ONNX Runtime over PyTorch on Pi**: PyTorch CPU on ARM works but it's heavyweight (~500MB+). ONNX Runtime is ~30MB, faster inference, and purpose-built for deployment. Both XGBoost and PyTorch models export cleanly to ONNX.
+**ONNX Runtime over PyTorch on Pi**: PyTorch CPU on ARM works but it's heavyweight (~500MB+). ONNX Runtime is ~30MB, faster inference, and purpose-built for deployment. Both XGBoost and the Hierarchical CNN+GRU (Conv1D + GRU + Dense — all standard ops) export cleanly to ONNX.
 
 **ib_insync over raw IBKR API**: The raw TWS API is callback-hell in Python. `ib_insync` wraps it in a clean async interface. Night and day difference in developer experience.
 
@@ -543,18 +622,20 @@ vix-alert-bot/
 │   ├── raw/                        # Raw downloaded CSVs
 │   ├── processed/                  # Cleaned, aligned training data
 │   └── scripts/
-│       ├── fetch_vix_history.py    # Download historical VIX spot
+│       ├── fetch_vix_history.py    # Download historical VIX spot (daily)
 │       ├── fetch_futures_history.py # Scrape/download futures data
-│       ├── fetch_spy_history.py    # Download SPY data
+│       ├── fetch_spy_history.py    # Download SPY data (daily)
+│       ├── fetch_intraday.py       # Fetch 5-min bars from IBKR (VIX + SPY)
 │       ├── fetch_supplementary.py  # VIX9D, SKEW, VVIX, HYG, P/C ratio
-│       └── build_dataset.py        # Merge, align, compute features
+│       └── build_dataset.py        # Merge, align, compute features (daily + multi-res)
 │
 ├── training/
-│   ├── features.py                 # Feature engineering functions
+│   ├── features.py                 # Feature engineering functions (daily + intraday)
+│   ├── aggregation.py              # Multi-resolution preprocessing (5-min → hourly → daily)
 │   ├── scaler.py                   # StandardScaler fitting and serialization
-│   ├── dataset.py                  # PyTorch Dataset class (for LSTM)
+│   ├── dataset.py                  # PyTorch Dataset class (multi-resolution tensors)
 │   ├── model_xgb.py               # XGBoost model definition and training
-│   ├── model_lstm.py              # LSTM model definition (secondary)
+│   ├── model_hcg.py               # Hierarchical CNN+GRU model definition (secondary)
 │   ├── baseline.py                 # Rules-based baseline for comparison
 │   ├── train.py                    # Training loop with walk-forward CV
 │   ├── backtest.py                 # Full P&L backtester (see Backtesting section)
@@ -562,7 +643,7 @@ vix-alert-bot/
 │   └── notebooks/
 │       ├── eda.ipynb               # Exploratory data analysis
 │       ├── backtest_results.ipynb  # Visualization of backtest
-│       └── model_comparison.ipynb  # XGBoost vs LSTM vs baseline comparison
+│       └── model_comparison.ipynb  # XGBoost vs CNN+GRU vs baseline comparison
 │
 ├── bot/
 │   ├── config.py                   # Configuration (API keys, thresholds)
@@ -595,7 +676,7 @@ Every trained model is saved with a version number and training date: `vix_{type
 - Currently deployed model version
 - Training date and data range used
 - Walk-forward validation metrics (AUC, precision, recall per fold)
-- Which model type (XGBoost, LSTM, ensemble)
+- Which model type (XGBoost, Hierarchical CNN+GRU, ensemble)
 - Feature scaler version
 
 The bot loads the model specified in the manifest. Model swaps are a manifest update + bot restart.
@@ -606,7 +687,8 @@ The bot loads the model specified in the manifest. Model swaps are a manifest up
 
 ### Phase 1: Data Collection and Exploration (3-4 days)
 
-- Write data fetching scripts for historical VIX spot, futures, SPY, VVIX, VIX9D, SKEW, HYG, put/call ratio
+- Write data fetching scripts for historical VIX spot, futures, SPY, VVIX, VIX9D, SKEW, HYG, put/call ratio (daily data from free sources)
+- Fetch available 5-min intraday history from IBKR for VIX and SPY (~1-2 years). Set up SQLite schema for ongoing 5-min bar storage.
 - Clean and align the data into a unified DataFrame. Expect futures roll alignment and CBOE data format inconsistencies to be the biggest time sinks.
 - Exploratory analysis: visualize the full spectrum of VIX elevations (not just extreme spikes), term structure during events, reversion timelines at different VIX levels
 - Characterize the dataset: count how many labeled setups exist at different z-score thresholds and horizon windows
@@ -615,10 +697,10 @@ The bot loads the model specified in the manifest. Model swaps are a manifest up
 
 ### Phase 2: Feature Engineering and Model Training (4-5 days)
 
-- **Phase 2a**: Implement feature computation pipeline with standardization. Train XGBoost `p_revert` classifier with walk-forward CV. Compare against the rules-based baseline. If XGBoost doesn't beat the baseline, iterate on features and labeling before proceeding.
+- **Phase 2a**: Implement daily feature computation pipeline with standardization. Train XGBoost `p_revert` classifier with walk-forward CV. Compare against the rules-based baseline. If XGBoost doesn't beat the baseline, iterate on features and labeling before proceeding.
 - **Phase 2b**: Train XGBoost `p_spike_first` classifier. This is the highest-value and hardest prediction -- expect iteration here. If walk-forward AUC < 0.60 across folds, fall back to the rules-based spike risk proxy (VVIX + term structure heuristic) and move on.
 - **Phase 2c**: Add `expected_magnitude` regressor if 2a and 2b show solid walk-forward performance. Skip if not.
-- **Phase 2d**: Train LSTM on the same data. Compare head-to-head against XGBoost. Only adopt if it beats XGBoost by >2% AUC consistently. Test ensemble if both show independent strengths.
+- **Phase 2d**: Implement multi-resolution preprocessing pipeline (5-min → hourly → daily aggregation). Train Hierarchical CNN+GRU on multi-resolution data. Compare head-to-head against XGBoost. Only adopt if it beats XGBoost by >2% AUC consistently. Test late fusion ensemble if both show independent strengths.
 - Export final model(s) to ONNX with versioned filenames.
 
 ### Phase 3: Backtesting (2-3 days)
@@ -645,7 +727,7 @@ The bot loads the model specified in the manifest. Model swaps are a manifest up
 Run the full pipeline against live market data without acting on alerts. This phase validates:
 
 - **Data pipeline reliability**: Does the IBKR connection hold? How often does data go stale? Are reconnections smooth?
-- **Feature pipeline correctness**: Do real-time features match what the model saw in training? Log real-time features alongside predictions and spot-check against historical computations.
+- **Feature pipeline correctness**: Do real-time features match what the model saw in training? Log real-time features alongside predictions and spot-check against historical computations. For the CNN+GRU, verify that the multi-resolution aggregation (5-min → hourly → daily) produces tensors consistent with training data.
 - **Alert quality**: Are the alerts sensible? Do the suggested trades have reasonable strikes and DTEs? Are liquidity checks working?
 - **Operational stability**: Does the bot stay up for days at a time? Memory leaks? Disk usage creeping?
 
@@ -694,7 +776,7 @@ Log every model inference (inputs, outputs, timestamp) to SQLite during this pha
 - **Model overfitting**: With ~200-400 labeled setups, overfitting is less catastrophic than with 15-20, but still a real risk. Keep the model simple (XGBoost with max_depth 4-6), use walk-forward validation exclusively, and always compare against the rules-based baseline. If the model doesn't beat the baseline, use the baseline.
 - **Data snooping**: Be rigorous about walk-forward validation. It's tempting to "optimize" on the full dataset. The phased training approach (2a/2b/2c/2d) helps -- each head must independently prove value. The rules-based baseline, defined before training, prevents goalpost-shifting.
 - **IB Gateway reliability**: It disconnects daily and sometimes has maintenance windows. The bot needs graceful reconnection logic, data staleness detection, and clear alerting when the pipeline is degraded (see Connection Resilience).
-- **Regime changes**: VIX behavior during 2008, 2020, and 2022 looked quite different. The z-score-based approach helps here (it normalizes across regimes), but a model trained primarily on post-2010 low-vol environments may underestimate tail risk. Train on the full 2004-present history.
+- **Regime changes**: VIX behavior during 2008, 2020, and 2022 looked quite different. The z-score-based approach helps here (it normalizes across regimes), but a model trained primarily on post-2010 low-vol environments may underestimate tail risk. Train on the full 2004-present history. The Hierarchical CNN+GRU's regime stream is specifically designed to detect regime context — it sees whether VIX was sitting at 12 for two months before a spike (sharp regime break, likely to revert hard) vs. grinding between 18-24 for weeks (ambiguous, lower confidence).
 - **Moderate setups are noisier**: VIX at 22 sometimes just drifts back to 18, sometimes explodes to 40. The signal-to-noise ratio is inherently worse than at extreme levels. Expect lower win rates on moderate-tier alerts (~60-65%) vs. major spike alerts (~75-80%). The daily digest should track this over time.
 - **Feature leakage with `rv_iv_spread`**: Realized vol is backward-looking, VIX is forward-looking. Always compute realized vol using only T-1 and earlier data to avoid including information not yet available at inference time.
 - **Options liquidity in stressed markets**: During VIX spikes, bid-ask spreads on VIX and UVXY options can blow out. The trade suggester's liquidity checks are a first defense, but the alert should always include the current spread so the user can judge whether the trade is executable at a reasonable price.
@@ -717,9 +799,8 @@ Define these upfront. If any are triggered, pause the bot and investigate before
 ## Potential Enhancements (Future)
 
 - **Web dashboard**: Simple Flask/FastAPI app on the Pi showing current model state, historical signals, and P&L tracking on past alerts (separate win rates for moderate vs. major setups)
-- **LSTM or Transformer model**: If more labeled data accumulates over time (500+ setups), revisit sequence models that may better capture temporal dynamics
-- **Ensemble**: Stack XGBoost + LSTM predictions if both show independent strengths. XGBoost may particularly help on moderate setups where tabular features dominate, LSTM on spike detection where sequence matters.
+- **Attention-based regime discovery**: If more labeled data accumulates over time (500+ setups), add lightweight attention within the regime stream to let the model discover which past days matter most, rather than relying purely on the GRU's recurrent state
 - **Execution integration**: Semi-automated order placement through IBKR with one-tap Telegram confirmation
 - **Adaptive z-score windows**: Experiment with multiple lookback windows (30d, 60d, 120d) for the z-score calculation to capture different regime speeds
-- **Intraday signals**: Move from end-of-day to intraday feature computation for faster entries on fast-moving spikes
+- **Expanded intraday features**: Add options flow data (put/call volume intraday), VIX futures tick data, or order book depth as additional inputs to the intraday stream
 - **SMS fallback**: Add Twilio SMS as backup notification channel in case Telegram is down
